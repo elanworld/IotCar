@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Car Control</title>
+  <style>
+    .container {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+    }
+    .row {
+      display: flex;
+      justify-content: center;
+      margin: 10px;
+    }
+    button {
+      width: 100px;
+      height: 100px;
+      font-size: 20px;
+      margin: 5px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Control Your Car</h1>
+    <div class="row">
+      <button onclick="sendCommand('forward')">Forward</button>
+    </div>
+    <div class="row">
+      <button onclick="sendCommand('left')">Left</button>
+      <button onclick="sendCommand('stop')">Stop</button>
+      <button onclick="sendCommand('right')">Right</button>
+    </div>
+    <div class="row">
+      <button onclick="sendCommand('backward')">Backward</button>
+    </div>
+  </div>
+
+  <script>
+    function sendCommand(command) {
+      fetch(`/${command}`)
+        .then(response => response.text())
+        .then(data => console.log(data));
+    }
+  </script>
+</body>
+</html>

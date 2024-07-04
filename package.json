@@ -1,0 +1,20 @@
+{
+  "name": "IotCar",
+  "version": "0.1",
+  "description": "Tools for IotCar project",
+  "main": "embed_html.js",
+  "directories": {
+    "lib": "lib",
+    "test": "test"
+  },
+  "scripts": {
+    "build": "node embed_html.js",
+    "dev": "nodemon -e js,html,htm,css,png,jpg,gif,ico,js -w src/ -x node embed_html.js"
+  },
+  "dependencies": {
+    "clean-css": "^4.2.3",
+    "html-minifier-terser": "^5.1.1",
+    "inliner": "^1.13.1",
+    "nodemon": "^2.0.20"
+  }
+}
