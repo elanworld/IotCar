@@ -27,8 +27,9 @@ const int RECV_PIN = 19;
 IRrecv irrecv(RECV_PIN);
 decode_results results;
 // BLE UUIDs
-#define SERVICE_UUID "12345678-1234-5678-1234-56789abcdef0"
-#define CHARACTERISTIC_UUID "abcdef12-3456-7890-abcd-ef1234567890"
+#define SERVICE_UUID_NAME "bridge"
+#define CHARACTERISTIC_UUID_NAME "bridge01"
+BLEService *pService;
 BLECharacteristic *pCharacteristic;
 
 // Function to initialize WiFi
@@ -47,14 +48,41 @@ void initWiFi()
   WiFi.disconnect();
 }
 
+  String padStringToUUID(const String &str)
+  {
+    String paddedStr = str;
+    while (paddedStr.length() < 32)
+    {
+      paddedStr += "0";
+    }
+
+    // Insert hyphens at appropriate positions
+    paddedStr = paddedStr.substring(0, 8) + "-" + paddedStr.substring(8, 12) + "-" +
+                paddedStr.substring(12, 16) + "-" + paddedStr.substring(16, 20) + "-" +
+                paddedStr.substring(20);
+
+    return paddedStr;
+  }
+
+  String stringToHex(const String &str)
+  {
+    String hexString;
+    for (char c : str)
+    {
+      char buf[3];
+      sprintf(buf, "%02X", static_cast<unsigned char>(c));
+      hexString += buf;
+    }
+    return hexString;
+  }
 // Function to initialize BLE
 void initBLE()
 {
   BLEDevice::init("ESP32-BLE");
   BLEServer *pServer = BLEDevice::createServer();
-  BLEService *pService = pServer->createService(SERVICE_UUID);
+  BLEService *pService = pServer->createService(padStringToUUID(stringToHex(SERVICE_UUID_NAME)).c_str());
   pCharacteristic = pService->createCharacteristic(
-      CHARACTERISTIC_UUID,
+      padStringToUUID(stringToHex(CHARACTERISTIC_UUID_NAME)).c_str(),
       BLECharacteristic::PROPERTY_READ |
           BLECharacteristic::PROPERTY_WRITE |
           BLECharacteristic::PROPERTY_NOTIFY);
@@ -64,7 +92,7 @@ void initBLE()
 
   // Start advertising
   BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
-  pAdvertising->addServiceUUID(SERVICE_UUID);
+  pAdvertising->addServiceUUID(padStringToUUID(stringToHex(SERVICE_UUID_NAME)).c_str());
   pAdvertising->setScanResponse(false);
   pAdvertising->setMinPreferred(0x06); // functions that help with iPhone connections issue
   pAdvertising->setMinPreferred(0x12);
@@ -75,6 +103,10 @@ void initBLE()
 // Function to handle BLE read/write requests
 class MyCallbacks : public BLECharacteristicCallbacks
 {
+   void onStatus(BLECharacteristic* pCharacteristic, Status s, uint32_t code) override {
+    
+    Serial.println("Advertising restarted");
+  }
   void onWrite(BLECharacteristic *pCharacteristic)
   {
     std::string value = pCharacteristic->getValue();
@@ -145,6 +177,7 @@ class MyCallbacks : public BLECharacteristicCallbacks
     pCharacteristic->notify();
   }
 };
+
 
 void moveForward(int speed)
 {
