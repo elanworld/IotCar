@@ -37,7 +37,7 @@ void initWiFi()
 {
   WiFi.begin(ssid, password);
   Serial.print("Connecting to WiFi ");
-  for (size_t i = 0; i < 10 && WiFi.status() != WL_CONNECTED; i++)
+  for (size_t i = 0; i < 20 && WiFi.status() != WL_CONNECTED; i++)
   {
     delay(1000);
     Serial.print(".");
@@ -48,37 +48,51 @@ void initWiFi()
   WiFi.disconnect();
 }
 
-  String padStringToUUID(const String &str)
+String padStringToUUID(const String &str)
+{
+  String paddedStr = str;
+  while (paddedStr.length() < 32)
   {
-    String paddedStr = str;
-    while (paddedStr.length() < 32)
-    {
-      paddedStr += "0";
-    }
-
-    // Insert hyphens at appropriate positions
-    paddedStr = paddedStr.substring(0, 8) + "-" + paddedStr.substring(8, 12) + "-" +
-                paddedStr.substring(12, 16) + "-" + paddedStr.substring(16, 20) + "-" +
-                paddedStr.substring(20);
-
-    return paddedStr;
+    paddedStr += "0";
   }
 
-  String stringToHex(const String &str)
+  // Insert hyphens at appropriate positions
+  paddedStr = paddedStr.substring(0, 8) + "-" + paddedStr.substring(8, 12) + "-" +
+              paddedStr.substring(12, 16) + "-" + paddedStr.substring(16, 20) + "-" +
+              paddedStr.substring(20);
+
+  return paddedStr;
+}
+
+String stringToHex(const String &str)
+{
+  String hexString;
+  for (char c : str)
   {
-    String hexString;
-    for (char c : str)
-    {
-      char buf[3];
-      sprintf(buf, "%02X", static_cast<unsigned char>(c));
-      hexString += buf;
-    }
-    return hexString;
+    char buf[3];
+    sprintf(buf, "%02X", static_cast<unsigned char>(c));
+    hexString += buf;
   }
+  return hexString;
+}
+
+class MyServerCallbacks : public BLEServerCallbacks
+{
+  void onConnect(BLEServer *pServer) override
+  {
+    Serial.println("clients connected...");
+  }
+
+  void onDisconnect(BLEServer *pServer) override
+  {
+    Serial.println("clients disconnect...");
+    BLEDevice::startAdvertising();
+  }
+};
 // Function to initialize BLE
 void initBLE()
 {
-  BLEDevice::init("ESP32-BLE");
+  BLEDevice::init("ESP32-IOT-CAR");
   BLEServer *pServer = BLEDevice::createServer();
   BLEService *pService = pServer->createService(padStringToUUID(stringToHex(SERVICE_UUID_NAME)).c_str());
   pCharacteristic = pService->createCharacteristic(
@@ -97,87 +111,169 @@ void initBLE()
   pAdvertising->setMinPreferred(0x06); // functions that help with iPhone connections issue
   pAdvertising->setMinPreferred(0x12);
   BLEDevice::startAdvertising();
+
+  pServer->setCallbacks(new MyServerCallbacks());
+
   Serial.println("BLE service and characteristic started, advertising...");
 }
-
 // Function to handle BLE read/write requests
 class MyCallbacks : public BLECharacteristicCallbacks
 {
-   void onStatus(BLECharacteristic* pCharacteristic, Status s, uint32_t code) override {
-    
-    Serial.println("Advertising restarted");
-  }
+  std::string accumulatedValue;
+  bool receiving = false;
   void onWrite(BLECharacteristic *pCharacteristic)
   {
     std::string value = pCharacteristic->getValue();
     Serial.print("BLE Write request received: ");
     Serial.println(value.c_str());
-
-    // Parse the JSON data
-    DynamicJsonDocument doc(1024);
-    DeserializationError error = deserializeJson(doc, value);
-    if (error)
+    // Check for the START marker
+    // Check for the START marker at the beginning
+    if (value.find("START") == 0)
     {
-      Serial.print("Failed to parse JSON: ");
-      Serial.println(error.f_str());
-      pCharacteristic->setValue("Invalid JSON");
-      pCharacteristic->notify();
-      return;
+      accumulatedValue = "";
+      receiving = true;
+      value.erase(0, 5); // Remove the START marker
     }
 
-    const char *id = doc["id"];
-    const char *url = doc["url"];
-    const char *method = doc["method"];
-    const char *body = doc["body"];
-
-    // Make HTTP client request based on the JSON data
-    HTTPClient http;
-    http.begin(url); // URL from JSON data
-
-    int httpCode;
-    if (strcmp(method, "GET") == 0)
+    // Check for the END marker at the end
+    if (!receiving)
     {
-      httpCode = http.GET();
+      accumulatedValue = "";
+      accumulatedValue += value;
     }
-    else if (strcmp(method, "POST") == 0)
+    else if (value.rfind("END") == value.size() - 3)
     {
-      http.addHeader("Content-Type", "application/json");
-      httpCode = http.POST(body); // Body from JSON data
+      value.erase(value.size() - 3); // Remove the END marker
+      accumulatedValue += value;
+      receiving = false;
     }
-    else
+    else if (receiving)
     {
-      pCharacteristic->setValue("Unsupported HTTP method");
-      pCharacteristic->notify();
+      accumulatedValue += value;
+    }
+    // Process the complete message if END marker is found
+    if (!receiving && !accumulatedValue.empty())
+    {
+      Serial.print("Complete BLE message received: ");
+      Serial.println(accumulatedValue.c_str());
+    }
+    // Process the complete message if END marker is found
+    if (!receiving)
+    {
+      // Parse the JSON data
+      DynamicJsonDocument doc(1024);
+      DeserializationError error = deserializeJson(doc, accumulatedValue);
+      if (error)
+      {
+        Serial.print("Failed to parse JSON: ");
+        Serial.println(error.f_str());
+        Serial.println(accumulatedValue.c_str());
+        pCharacteristic->setValue("Invalid JSON");
+        pCharacteristic->notify();
+        return;
+      }
+
+      const char *id = doc["id"];
+      const char *url = doc["url"];
+      const char *method = doc["method"];
+      const char *body = doc["body"];
+      JsonObject headers = doc["header"].as<JsonObject>();
+
+      // Make HTTP client request based on the JSON data
+      HTTPClient http;
+      http.begin(url); // URL from JSON data
+
+      // Add headers to the HTTP request
+      for (JsonPair kv : headers)
+      {
+        http.addHeader(kv.key().c_str(), kv.value().as<const char *>());
+      }
+
+      int httpCode;
+      if (strcmp(method, "GET") == 0)
+      {
+        httpCode = http.GET();
+      }
+      else if (strcmp(method, "POST") == 0)
+      {
+        httpCode = http.POST(body); // Body from JSON data
+      }
+      else
+      {
+        pCharacteristic->setValue("Unsupported HTTP method");
+        pCharacteristic->notify();
+        http.end();
+        return;
+      }
+
+      String responsePayload;
+      if (httpCode > 0)
+      {
+        responsePayload = http.getString();
+      }
+      else
+      {
+        responsePayload = "HTTP request failed";
+      }
+
+      // Extract headers from the HTTP response
+      JsonObject resHeaders = doc.createNestedObject("header");
+      for (int i = 0; i < http.headers(); i++)
+      {
+        resHeaders[http.headerName(i)] = http.header(i);
+      }
       http.end();
-      return;
+
+      doc["status"] = httpCode;
+      doc["body"] = responsePayload;
+
+      // Serialize JSON back to string
+      String response;
+      serializeJson(doc, response);
+      Serial.println(response);
+
+      // Send the response in chunks of 512 bytes
+      const size_t chunkSize = 512;
+
+      if (response.length() <= chunkSize)
+      {
+
+        pCharacteristic->setValue(response.c_str());
+        pCharacteristic->notify();
+      }
+      else
+      {
+        size_t responseLength = response.length();
+        size_t sentLength = 0;
+        while (sentLength < responseLength)
+        {
+          size_t currentChunkSize = (responseLength - sentLength) > chunkSize ? chunkSize : (responseLength - sentLength);
+          String chunk = response.substring(sentLength, sentLength + currentChunkSize);
+
+          // Add start and end markers
+          if (sentLength == 0)
+          {
+            chunk = "START" + chunk;
+          }
+          if (sentLength + currentChunkSize == responseLength)
+          {
+            chunk += "END";
+          }
+
+          pCharacteristic->setValue(chunk.c_str());
+          pCharacteristic->notify();
+          sentLength += currentChunkSize;
+          delay(20); // Short delay to ensure the transmission is processed
+        }
+      }
     }
+  }
 
-    String payload;
-    if (httpCode > 0)
-    {
-      payload = http.getString();
-      Serial.println("HTTP Response: " + payload);
-    }
-    else
-    {
-      payload = "HTTP request failed";
-      Serial.println(payload);
-    }
-    http.end();
-
-    // Add response body to the JSON
-    doc["resBody"] = payload;
-
-    // Serialize JSON back to string
-    String response;
-    serializeJson(doc, response);
-
-    // Set the BLE characteristic value with the updated JSON and notify
-    pCharacteristic->setValue(response.c_str());
-    pCharacteristic->notify();
+  void onStatus(BLECharacteristic *pCharacteristic, Status s, uint32_t code) override
+  {
+    Serial.println("onStatus...");
   }
 };
-
 
 void moveForward(int speed)
 {
@@ -235,9 +331,26 @@ void stop()
   analogWrite(PWMB, 0);
 }
 
-void initWebServer()
+void initMotor()
 {
 
+  // 打印初始信息
+  Serial.println("inin pin...");
+  // 设置引脚模式
+  pinMode(STBY, OUTPUT);
+  pinMode(PWMA, OUTPUT);
+  pinMode(AIN1, OUTPUT);
+  pinMode(AIN2, OUTPUT);
+  pinMode(PWMB, OUTPUT);
+  pinMode(BIN1, OUTPUT);
+  pinMode(BIN2, OUTPUT);
+
+  // 启动驱动板
+  digitalWrite(STBY, HIGH);
+}
+
+void initWebServer()
+{
   // 定义HTTP请求处理函数
   static const char s_content_enc[] PROGMEM = "Content-Encoding";
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *request)
@@ -319,21 +432,7 @@ void setup()
 {
   // 初始化串口通信，波特率设为9600
   Serial.begin(115200);
-
-  // 打印初始信息
-  Serial.println("inin pin...");
-  // 设置引脚模式
-  pinMode(STBY, OUTPUT);
-  pinMode(PWMA, OUTPUT);
-  pinMode(AIN1, OUTPUT);
-  pinMode(AIN2, OUTPUT);
-  pinMode(PWMB, OUTPUT);
-  pinMode(BIN1, OUTPUT);
-  pinMode(BIN2, OUTPUT);
-
-  // 启动驱动板
-  digitalWrite(STBY, HIGH);
-
+  initMotor();
   // Initialize BLE
   initBLE();
 
@@ -349,6 +448,6 @@ void setup()
 }
 void loop()
 {
-  receive_ir_data();
+  // receive_ir_data();
   delay(100); // 短暂延时，防止串口输出过快
 }
